@@ -1,0 +1,123 @@
+package com.safeguard.app.services
+
+import android.app.Service
+import android.content.Intent
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
+import android.os.IBinder
+import android.util.Log
+import kotlin.math.sqrt
+
+/**
+ * ShakeDetectorService
+ *
+ * Runs in the background and listens for rapid phone shaking.
+ * When the shake threshold is exceeded 3 times within 1.5 seconds,
+ * it launches SOSActivity automatically.
+ *
+ * Shake sensitivity is configurable via SharedPreferences.
+ */
+class ShakeDetectorService : Service(), SensorEventListener {
+
+    private lateinit var sensorManager: SensorManager
+    private var accelerometer: Sensor? = null
+
+    // Shake detection state
+    private var shakeCount = 0
+    private var lastShakeTime = 0L
+    private var lastX = 0f
+    private var lastY = 0f
+    private var lastZ = 0f
+    private var lastUpdateTime = 0L
+
+    companion object {
+        private const val TAG = "ShakeDetector"
+        private const val SHAKE_THRESHOLD = 1200       // Acceleration delta threshold
+        private const val SHAKE_WINDOW_MS = 1500L      // Window to count shakes
+        private const val REQUIRED_SHAKES = 3          // Shakes needed to trigger SOS
+        private const val MIN_TIME_BETWEEN_CHECKS = 100L  // ms between checks
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+        sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
+        accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        accelerometer?.let {
+            sensorManager.registerListener(
+                this,
+                it,
+                SensorManager.SENSOR_DELAY_NORMAL
+            )
+            Log.d(TAG, "Shake detector started")
+        } ?: Log.w(TAG, "No accelerometer available on this device")
+
+        return START_STICKY // Restart if killed
+    }
+
+    override fun onSensorChanged(event: SensorEvent?) {
+        if (event?.sensor?.type != Sensor.TYPE_ACCELEROMETER) return
+
+        val now = System.currentTimeMillis()
+        if (now - lastUpdateTime < MIN_TIME_BETWEEN_CHECKS) return
+        lastUpdateTime = now
+
+        val x = event.values[0]
+        val y = event.values[1]
+        val z = event.values[2]
+
+        val deltaX = x - lastX
+        val deltaY = y - lastY
+        val deltaZ = z - lastZ
+
+        lastX = x; lastY = y; lastZ = z
+
+        // Calculate movement speed
+        val speed = sqrt(deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ) /
+                    (now - lastUpdateTime) * 10000
+
+        if (speed > SHAKE_THRESHOLD) {
+            val timeSinceLastShake = now - lastShakeTime
+
+            if (timeSinceLastShake > SHAKE_WINDOW_MS) {
+                // Reset counter if too much time has passed
+                shakeCount = 0
+            }
+
+            shakeCount++
+            lastShakeTime = now
+
+            Log.d(TAG, "Shake detected! Count: $shakeCount")
+
+            if (shakeCount >= REQUIRED_SHAKES) {
+                shakeCount = 0
+                onShakeTriggered()
+            }
+        }
+    }
+
+    private fun onShakeTriggered() {
+        Log.d(TAG, "SOS triggered by shake!")
+        val intent = Intent(this, SOSActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra("trigger_source", "shake")
+        }
+        startActivity(intent)
+    }
+
+    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
+        // Not needed
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onDestroy() {
+        sensorManager.unregisterListener(this)
+        Log.d(TAG, "Shake detector stopped")
+        super.onDestroy()
+    }
+}

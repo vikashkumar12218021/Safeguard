@@ -1,0 +1,116 @@
+package com.safeguard.app.data.model
+
+import androidx.room.Entity
+import androidx.room.PrimaryKey
+
+/**
+ * EmergencyContact — stored in local Room DB.
+ *
+ * @param id          Auto-generated primary key
+ * @param name        Contact's display name
+ * @param phoneNumber E.164 formatted phone number (e.g. +919876543210)
+ * @param relation    Relationship label (e.g. "Mother", "Friend")
+ * @param isPrimary   Whether this contact is called first during SOS
+ * @param avatarUri   Optional local photo URI
+ * @param notifySMS   Whether to send SMS alert to this contact
+ * @param notifyCall  Whether to auto-call this contact during SOS
+ */
+@Entity(tableName = "emergency_contacts")
+data class EmergencyContact(
+    @PrimaryKey(autoGenerate = true)
+    val id: Long = 0,
+    val name: String,
+    val phoneNumber: String,
+    val relation: String = "",
+    val isPrimary: Boolean = false,
+    val avatarUri: String? = null,
+    val notifySMS: Boolean = true,
+    val notifyCall: Boolean = false,
+    val createdAt: Long = System.currentTimeMillis()
+)
+
+
+// ─── DAO ─────────────────────────────────────────────────────────────────────
+
+package com.safeguard.app.data.dao
+
+import androidx.room.*
+import com.safeguard.app.data.model.EmergencyContact
+import kotlinx.coroutines.flow.Flow
+
+@Dao
+interface EmergencyContactDao {
+
+    @Query("SELECT * FROM emergency_contacts ORDER BY isPrimary DESC, name ASC")
+    fun getAllContactsFlow(): Flow<List<EmergencyContact>>
+
+    @Query("SELECT * FROM emergency_contacts ORDER BY isPrimary DESC, name ASC")
+    suspend fun getAllContacts(): List<EmergencyContact>
+
+    @Query("SELECT * FROM emergency_contacts WHERE isPrimary = 1 LIMIT 1")
+    suspend fun getPrimaryContact(): EmergencyContact?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertContact(contact: EmergencyContact): Long
+
+    @Update
+    suspend fun updateContact(contact: EmergencyContact)
+
+    @Delete
+    suspend fun deleteContact(contact: EmergencyContact)
+
+    @Query("DELETE FROM emergency_contacts WHERE id = :id")
+    suspend fun deleteById(id: Long)
+
+    @Query("SELECT COUNT(*) FROM emergency_contacts")
+    fun getContactCount(): Flow<Int>
+}
+
+
+// ─── Database ─────────────────────────────────────────────────────────────────
+
+package com.safeguard.app.data.db
+
+import androidx.room.Database
+import androidx.room.RoomDatabase
+import com.safeguard.app.data.dao.EmergencyContactDao
+import com.safeguard.app.data.model.EmergencyContact
+
+@Database(
+    entities = [EmergencyContact::class],
+    version = 1,
+    exportSchema = false
+)
+abstract class SafeGuardDatabase : RoomDatabase() {
+    abstract fun emergencyContactDao(): EmergencyContactDao
+}
+
+
+// ─── Repository ──────────────────────────────────────────────────────────────
+
+package com.safeguard.app.data.repository
+
+import com.safeguard.app.data.dao.EmergencyContactDao
+import com.safeguard.app.data.model.EmergencyContact
+import kotlinx.coroutines.flow.Flow
+import javax.inject.Inject
+import javax.inject.Singleton
+
+@Singleton
+class ContactRepository @Inject constructor(
+    private val dao: EmergencyContactDao
+) {
+    fun getAllContactsFlow(): Flow<List<EmergencyContact>> = dao.getAllContactsFlow()
+
+    suspend fun getAllContacts(): List<EmergencyContact> = dao.getAllContacts()
+
+    suspend fun getPrimaryContact(): EmergencyContact? = dao.getPrimaryContact()
+
+    suspend fun addContact(contact: EmergencyContact): Long = dao.insertContact(contact)
+
+    suspend fun updateContact(contact: EmergencyContact) = dao.updateContact(contact)
+
+    suspend fun deleteContact(contact: EmergencyContact) = dao.deleteContact(contact)
+
+    fun getContactCount(): Flow<Int> = dao.getContactCount()
+}

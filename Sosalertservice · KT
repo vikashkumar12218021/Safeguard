@@ -1,0 +1,173 @@
+package com.safeguard.app.services
+
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.content.Intent
+import android.location.Location
+import android.telephony.SmsManager
+import androidx.core.app.NotificationCompat
+import androidx.lifecycle.LifecycleService
+import androidx.lifecycle.lifecycleScope
+import com.safeguard.app.R
+import com.safeguard.app.data.model.EmergencyContact
+import com.safeguard.app.data.repository.ContactRepository
+import com.safeguard.app.data.repository.LocationRepository
+import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import javax.inject.Inject
+
+@AndroidEntryPoint
+class SOSAlertService : LifecycleService() {
+
+    companion object {
+        const val CHANNEL_ID = "sos_alert_channel"
+        const val NOTIFICATION_ID = 2001
+    }
+
+    @Inject
+    lateinit var contactRepository: ContactRepository
+
+    @Inject
+    lateinit var locationRepository: LocationRepository
+
+    override fun onCreate() {
+        super.onCreate()
+        createNotificationChannel()
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        super.onStartCommand(intent, flags, startId)
+        startForeground(NOTIFICATION_ID, buildNotification("🚨 SOS Alert being sent..."))
+        sendSOSAlerts()
+        return START_NOT_STICKY
+    }
+
+    // ─── Core SOS Logic ──────────────────────────────────────────────────────
+
+    private fun sendSOSAlerts() {
+        lifecycleScope.launch(Dispatchers.IO) {
+            val contacts = contactRepository.getAllContacts()
+            val location = locationRepository.getLastKnownLocation()
+
+            if (contacts.isEmpty()) {
+                updateNotification("⚠️ No emergency contacts set up!")
+                stopSelf()
+                return@launch
+            }
+
+            val locationText = buildLocationText(location)
+            var successCount = 0
+
+            contacts.forEach { contact ->
+                val sent = sendSOSSMS(contact, locationText)
+                if (sent) successCount++
+            }
+
+            // Call the primary (first) contact
+            if (contacts.isNotEmpty()) {
+                initiateEmergencyCall(contacts.first())
+            }
+
+            withContext(Dispatchers.Main) {
+                updateNotification("✅ SOS sent to $successCount/${contacts.size} contacts")
+                // Stop service after 30s
+                android.os.Handler(mainLooper).postDelayed({ stopSelf() }, 30_000)
+            }
+        }
+    }
+
+    // ─── SMS ─────────────────────────────────────────────────────────────────
+
+    private fun sendSOSSMS(contact: EmergencyContact, locationText: String): Boolean {
+        return try {
+            val message = buildSmsMessage(contact.name, locationText)
+            val smsManager = SmsManager.getDefault()
+
+            // Split if message is too long
+            if (message.length > 160) {
+                val parts = smsManager.divideMessage(message)
+                smsManager.sendMultipartTextMessage(
+                    contact.phoneNumber, null, parts, null, null
+                )
+            } else {
+                smsManager.sendTextMessage(
+                    contact.phoneNumber, null, message, null, null
+                )
+            }
+            true
+        } catch (e: Exception) {
+            e.printStackTrace()
+            false
+        }
+    }
+
+    private fun buildSmsMessage(contactName: String, locationText: String): String {
+        return """
+            🚨 EMERGENCY SOS ALERT 🚨
+            
+            Hi $contactName, I need IMMEDIATE help!
+            
+            $locationText
+            
+            Please contact me or call emergency services (112/100/108).
+            
+            - Sent via SafeGuard App
+        """.trimIndent()
+    }
+
+    private fun buildLocationText(location: Location?): String {
+        return if (location != null) {
+            val mapsUrl = "https://maps.google.com/?q=${location.latitude},${location.longitude}"
+            "📍 My current location:\n$mapsUrl\n(Lat: ${location.latitude}, Lon: ${location.longitude})"
+        } else {
+            "⚠️ Location unavailable — please track my phone."
+        }
+    }
+
+    // ─── Call ────────────────────────────────────────────────────────────────
+
+    private fun initiateEmergencyCall(contact: EmergencyContact) {
+        try {
+            val callIntent = Intent(Intent.ACTION_CALL).apply {
+                data = android.net.Uri.parse("tel:${contact.phoneNumber}")
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+            startActivity(callIntent)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    // ─── Notification ────────────────────────────────────────────────────────
+
+    private fun createNotificationChannel() {
+        val channel = NotificationChannel(
+            CHANNEL_ID,
+            "SOS Alerts",
+            NotificationManager.IMPORTANCE_HIGH
+        ).apply {
+            description = "Critical SOS alert notifications"
+        }
+        getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+    }
+
+    private fun buildNotification(text: String): Notification {
+        return NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("SafeGuard — SOS Active")
+            .setContentText(text)
+            .setSmallIcon(R.drawable.ic_sos)
+            .setColor(getColor(R.color.sos_red))
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setCategory(NotificationCompat.CATEGORY_ALARM)
+            .setOngoing(true)
+            .build()
+    }
+
+    private fun updateNotification(text: String) {
+        val manager = getSystemService(NotificationManager::class.java)
+        manager.notify(NOTIFICATION_ID, buildNotification(text))
+    }
+}
